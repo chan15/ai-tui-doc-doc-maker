@@ -4,16 +4,35 @@ test_changelog.py
 Tests for changelog entry parsing, building, and trimming logic.
 """
 
-from fetch_and_translate import (CHANGELOG_HEADER, build_changelog, parse_changelog, )
+from fetch_and_translate import (CHANGELOG_HEADER, build_changelog, parse_changelog, build_diff_markdown)
 
 
 def make_entry(n: int) -> str:
-    return f"## 2026-01-{n:02d} 00:00 UTC\n\n### Google Gemini CLI\n\n（無變更）\n\n### GitHub Copilot CLI\n\n（無變更）\n"
+    return (f"## 2026-01-{n:02d} 00:00 UTC\n\n"
+            f"### Google Gemini CLI\n\n（無變更）\n\n"
+            f"### GitHub Copilot CLI\n\n（無變更）\n\n"
+            f"### OpenAI Codex CLI\n\n（無變更）\n")
 
 
 def make_changelog(num_entries: int) -> str:
     entries = [make_entry(i + 1) for i in range(num_entries)]
     return build_changelog(CHANGELOG_HEADER, entries)
+
+
+# ── build_diff_markdown ────────────────────────────────────────────────────────
+
+
+def test_build_diff_markdown_no_change():
+    res = build_diff_markdown("hello", "hello", "Test Title")
+    assert res == ""
+
+
+def test_build_diff_markdown_with_change():
+    res = build_diff_markdown("old line", "new line", "Test Title")
+    assert "### Test Title" in res
+    assert "```diff" in res
+    assert "-old line" in res
+    assert "+new line" in res
 
 
 # ── parse_changelog ────────────────────────────────────────────────────────────
@@ -28,6 +47,7 @@ def test_parse_fresh_changelog():
     content = make_changelog(3)
     header, entries = parse_changelog(content)
     assert header.startswith("###### tags")
+    assert "`codex`" in header  # Verify the new tag is present
     assert len(entries) == 3
 
 

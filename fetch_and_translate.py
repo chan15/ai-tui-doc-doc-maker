@@ -34,6 +34,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 GEMINI_CLI_URL = "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/reference/commands.md"
 GITHUB_COPILOT_URL = "https://docs.github.com/en/copilot/reference/cli-command-reference"
+OPENAI_CODEX_URL = "https://developers.openai.com/codex/cli/slash-commands"
 
 OUTPUT_FILE = "output.md"
 CACHE_FILE = "_cache.json"
@@ -41,8 +42,8 @@ CHANGELOG_FILE = "changelog.md"
 TRANSLATE_MODEL = "gemini-2.0-flash"
 CHANGELOG_MAX_ENTRIES = int(os.environ.get("CHANGELOG_MAX_ENTRIES", "10"))
 
-CHANGELOG_HEADER = ("###### tags: `ai` `gemini` `copilot`\n\n"
-                    "# Gemini CLI & GitHub Copilot CLI 指令更新 Changelog\n\n")
+CHANGELOG_HEADER = ("###### tags: `ai` `gemini` `copilot` `codex`\n\n"
+                    "# Gemini, GitHub Copilot & OpenAI Codex CLI 指令更新 Changelog\n\n")
 ENTRY_SEPARATOR = "\n---\n\n"
 
 
@@ -173,6 +174,60 @@ def fetch_github_copilot_docs() -> str:
     return content.strip()
 
 
+def fetch_openai_codex_docs() -> str:
+    """
+    Fetch the OpenAI Codex CLI reference page and extract the meaningful
+    text content while preserving table structure as markdown.
+    """
+    print(f"Fetching OpenAI Codex CLI docs from {OPENAI_CODEX_URL} …")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; codex-catch/1.0)"}
+    resp = requests.get(OPENAI_CODEX_URL, timeout=30, headers=headers)
+    resp.raise_for_status()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # OpenAI docs usually use <main> or <article>
+    article = soup.find("main") or soup.find("article") or soup.body
+
+    lines: list[str] = []
+    for elem in article.descendants:
+        if not hasattr(elem, "name"):
+            continue
+
+        tag = elem.name
+
+        if tag in ("h2", "h3", "h4"):
+            level = int(tag[1])
+            text = elem.get_text(strip=True)
+            if text:
+                lines.append(f"\n{'#' * level} {text}\n")
+
+        elif tag == "table":
+            rows = elem.find_all("tr")
+            for i, row in enumerate(rows):
+                cells = [c.get_text(separator=" ", strip=True).replace("|", r"\|") for c in row.find_all(["th", "td"])]
+                if not any(cells):
+                    continue
+                lines.append("| " + " | ".join(cells) + " |")
+                if i == 0:
+                    lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
+
+        elif tag == "p":
+            text = elem.get_text(strip=True)
+            if text and elem.parent.name not in ("td", "th", "li"):
+                lines.append(f"\n{text}\n")
+
+        elif tag == "li":
+            text = elem.get_text(strip=True)
+            if text and elem.parent.name in ("ul", "ol"):
+                prefix = "1." if elem.parent.name == "ol" else "-"
+                lines.append(f"{prefix} {text}")
+
+    content = "\n".join(lines)
+    content = re.sub(r"\n{3,}", "\n\n", content)
+    return content.strip()
+
+
 # ── Translation ────────────────────────────────────────────────────────────────
 
 
@@ -219,17 +274,22 @@ def main() -> None:
     # 2. Fetch raw content
     gemini_cli_raw = fetch_gemini_cli_docs()
     github_copilot_raw = fetch_github_copilot_docs()
+    openai_codex_raw = fetch_openai_codex_docs()
 
     # 3. Compute diffs against cached source
     diff_gemini = build_diff_markdown(cache.get("gemini_cli", ""), gemini_cli_raw, "Google Gemini CLI")
     diff_copilot = build_diff_markdown(cache.get("github_copilot", ""), github_copilot_raw, "GitHub Copilot CLI")
+    diff_codex = build_diff_markdown(cache.get("openai_codex", ""), openai_codex_raw, "OpenAI Codex CLI")
 
     # 4. Prepend to changelog.md if anything changed
-    if diff_gemini or diff_copilot:
+    if diff_gemini or diff_copilot or diff_codex:
         is_first_run = not cache
         diff_note = "（首次執行，無前次資料可比較）" if is_first_run else ""
-        diff_sections = (diff_gemini or "### Google Gemini CLI\n\n（無變更）\n") + "\n" + (
-                diff_copilot or "### GitHub Copilot CLI\n\n（無變更）\n")
+        diff_sections = (
+                (diff_gemini or "### Google Gemini CLI\n\n（無變更）\n") + "\n" +
+                (diff_copilot or "### GitHub Copilot CLI\n\n（無變更）\n") + "\n" +
+                (diff_codex or "### OpenAI Codex CLI\n\n（無變更）\n")
+        )
         new_entry = f"## {now_str} {diff_note}\n\n{diff_sections}"
 
         changelog_path = Path(CHANGELOG_FILE)
@@ -244,32 +304,39 @@ def main() -> None:
         print("📋  No source changes detected, skipping changelog.")
 
     # 5. Save updated cache
-    save_cache({"gemini_cli": gemini_cli_raw, "github_copilot": github_copilot_raw})
+    save_cache({
+        "gemini_cli": gemini_cli_raw,
+        "github_copilot": github_copilot_raw,
+        "openai_codex": openai_codex_raw
+    })
 
     # 6. If nothing changed, skip translation entirely
-    if not diff_gemini and not diff_copilot:
+    if not diff_gemini and not diff_copilot and not diff_codex:
         print("⏭️   No changes detected, skipping translation.")
         return
 
-    # 7. Translate both
+    # 7. Translate all
     gemini_cli_translated = translate_with_gemini(gemini_cli_raw, "Google Gemini CLI")
     github_copilot_translated = translate_with_gemini(github_copilot_raw, "GitHub Copilot CLI")
+    openai_codex_translated = translate_with_gemini(openai_codex_raw, "OpenAI Codex CLI")
 
     # 8. Assemble output markdown
-    output = f"""###### tags: `ai` `gemini` `copilot`
+    output = f"""###### tags: `ai` `gemini` `copilot` `codex`
 
-# Gemini CLI & GitHub Copilot CLI 指令參考
+# Gemini, GitHub Copilot & OpenAI Codex CLI 指令參考
 
 > 自動抓取並翻譯，更新時間：{now_str}
 >
 > 原始來源：
 > - [Google Gemini CLI commands]({GEMINI_CLI_URL})
 > - [GitHub Copilot CLI reference]({GITHUB_COPILOT_URL})
+> - [OpenAI Codex CLI reference]({OPENAI_CODEX_URL})
 
 ## 目錄
 
 - [Google Gemini CLI](#Google-Gemini-CLI)
 - [GitHub Copilot CLI](#GitHub-Copilot-CLI)
+- [OpenAI Codex CLI](#OpenAI-Codex-CLI)
 
 ---
 
@@ -282,6 +349,12 @@ def main() -> None:
 ## GitHub Copilot CLI
 
 {github_copilot_translated}
+
+---
+
+## OpenAI Codex CLI
+
+{openai_codex_translated}
 """
 
     # 9. Write output file
